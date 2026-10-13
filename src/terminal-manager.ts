@@ -36,6 +36,29 @@ function getRepairedPathExt(): string {
   return current;
 }
 
+/**
+ * Repair ProgramData omitted by some Windows MCP host environment allowlists.
+ * Native Microsoft OpenSSH can exit 255 without output when this variable is
+ * missing (#627, #702). Preserve a provided value, including a custom path.
+ * Work on the copied child env, never the server's process.env.
+ */
+export function repairWindowsProgramData(env: NodeJS.ProcessEnv): void {
+  const keys = Object.keys(env).filter(key => key.toLowerCase() === 'programdata');
+  const inherited = keys.map(key => env[key])
+    .find(value => typeof value === 'string' && value.trim().length > 0);
+  if (inherited && keys.length === 1) return;
+
+  // SystemDrive is normally retained by the MCP SDK's Windows allowlist.
+  const drive = Object.entries(env).find(([key, value]) =>
+    key.toLowerCase() === 'systemdrive' &&
+    typeof value === 'string' && /^[a-z]:$/i.test(value))?.[1] ?? 'C:';
+
+  // Node's Windows child-process spawning treats env keys case-insensitively;
+  // remove empty/conflicting aliases before assigning a single canonical key.
+  for (const key of keys) delete env[key];
+  env.ProgramData = inherited ?? `${drive}\\ProgramData`;
+}
+
 /** A child process's output pipes. */
 type OutputStream = 'stdout' | 'stderr';
 const OUTPUT_STREAMS: readonly OutputStream[] = ['stdout', 'stderr'];
@@ -214,6 +237,7 @@ export class TerminalManager {
     // resolution (git, node, python, rg, ...) in the spawned shell. See #481.
     if (process.platform === 'win32' && spawnOptions.env) {
       spawnOptions.env.PATHEXT = getRepairedPathExt();
+      repairWindowsProgramData(spawnOptions.env);
     }
 
     // On Windows, when we invoke cmd.exe directly and pass the user's command as a
